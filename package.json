@@ -1,0 +1,19 @@
+{
+  "name": "tree-saw",
+  "version": "0.1.0",
+  "description": "tree-sitter and compilers testing each other",
+  "main": "tree-saw.js",
+  "bin": {
+    "tree-saw": "tree-saw.js"
+  },
+  "author": "Philipp Emanuel Weidmann",
+  "license": "MIT",
+  "repository": "github:p-e-w/tree-saw",
+  "dependencies": {
+    "commander": "^2.13.0",
+    "lodash": "^4.17.4",
+    "probability-distributions": "^0.9.1",
+    "randexp": "^0.4.6",
+    "tree-sitter": "^0.8.8"
+  }
+}

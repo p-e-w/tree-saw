@@ -21,7 +21,8 @@ const PD = require("probability-distributions");
 const {Document} = require("tree-sitter");
 
 class Node {
-  constructor(type, contents) {
+  constructor(name, type, contents) {
+    this.name = name;
     this.type = type;
     // Either a string or an array of nodes
     this.contents = contents;
@@ -66,10 +67,23 @@ class Node {
   }
 
   toArray() {
-    if (_.isArray(this.contents)) {
+    if (this.type === "TOKEN") {
+      return [_.flattenDeep(this.contents.map(t => t.toArray())).join("")];
+    } else if (_.isArray(this.contents)) {
       return this.contents.map(t => t.toArray());
     } else {
       return [this.contents];
+    }
+  }
+
+  toASTString() {
+    const contentsAST = _.isArray(this.contents) ?
+      this.contents.map(t => t.toASTString()).filter(s => s.length > 0).join(" ") : "";
+
+    if (this.name === null || /^[^a-z]/.test(this.name)) {
+      return contentsAST;
+    } else {
+      return "(" + this.name + ((contentsAST.length > 0) ? (" " + contentsAST) : "") + ")";
     }
   }
 }
@@ -85,24 +99,24 @@ class Generator {
     this.maxRegexRepeat = maxRegexRepeat;
   }
 
-  generate(rule, depth = 1) {
+  generate(rule, name, depth = 1) {
     const type = rule.type;
 
     switch (type) {
       case "BLANK":
-        return new Node(type, "");
+        return new Node(name, type, "");
       case "STRING":
-        return new Node(type, rule.value);
+        return new Node(name, type, rule.value);
       case "PATTERN":
         if (!rule.hasOwnProperty("randexp")) {
           rule.randexp = new RandExp(rule.value);
           rule.randexp.max = this.maxRegexRepeat;
         }
-        return new Node(type, rule.randexp.gen());
+        return new Node(name, type, rule.randexp.gen());
       case "SYMBOL":
-        return new Node(type, [this.generate(this.grammar.rules[rule.name], depth + 1)]);
+        return new Node(name, type, [this.generate(this.grammar.rules[rule.name], rule.name, depth + 1)]);
       case "SEQ":
-        return new Node(type, rule.members.map(r => this.generate(r, depth + 1)));
+        return new Node(name, type, rule.members.map(r => this.generate(r, null, depth + 1)));
       case "CHOICE":
         let nextRule;
         if (depth > this.maxDepth) {
@@ -116,22 +130,28 @@ class Generator {
         } else {
           nextRule = PD.sample(rule.members, 1, true)[0];
         }
-        return new Node(type, [this.generate(nextRule, depth + 1)]);
+        return new Node(name, type, [this.generate(nextRule, null, depth + 1)]);
       case "ALIAS":
-        return new Node(type, [this.generate(rule.content, depth + 1)]);
+        let nextNode;
+        if (rule.content.type === "SYMBOL") {
+          nextNode = this.generate(this.grammar.rules[rule.content.name], rule.value, depth + 2);
+        } else {
+          nextNode = this.generate(rule.content, rule.value, depth + 1);
+        }
+        return new Node(name, type, [nextNode]);
       case "REPEAT":
       case "REPEAT1":
         let n = PD.rpois(1, this.meanRepeat)[0];
         if (n === 0 && type === "REPEAT1") {
           n = 1;
         }
-        return new Node(type, Array(n).fill(0).map(() => this.generate(rule.content, depth + 1)));
+        return new Node(name, type, Array(n).fill(0).map(() => this.generate(rule.content, null, depth + 1)));
       case "TOKEN":
       case "PREC":
       case "PREC_LEFT":
       case "PREC_RIGHT":
       case "PREC_DYNAMIC":
-        return new Node(type, [this.generate(rule.content, depth + 1)]);
+        return new Node(name, type, [this.generate(rule.content, null, depth + 1)]);
       default:
         throw "Unrecognized rule type: " + type;
     }
@@ -179,7 +199,7 @@ class Generator {
 
 function run(grammarFile, options) {
   const grammar = JSON.parse(fs.readFileSync(grammarFile, "utf8"));
-  const startRule = grammar.rules[Object.keys(grammar.rules)[0]];
+  const startRule = Object.keys(grammar.rules)[0];
   const generator = new Generator(grammar, options.depth, options.repeat, options.regexRepeat);
 
   const hasGrammar = options.hasOwnProperty("grammar");
@@ -193,12 +213,17 @@ function run(grammarFile, options) {
 
   const compilerArgs = (hasCompiler ? options.compiler.split(/\s+/) : null);
 
-  function getError(output) {
+  function getError(output, ast) {
     if (hasGrammar) {
       document.setInputString(output);
       document.parse();
+
       if (document.rootNode.hasError()) {
-        return "AST error";
+        return "AST error. Predicted AST:\n" + ast;
+      }
+
+      if (document.rootNode.toString() !== ast) {
+        return "AST discrepancy. Predicted AST:\n" + ast;
       }
     }
 
@@ -215,11 +240,11 @@ function run(grammarFile, options) {
   let results = 0;
 
   while (results < options.results) {
-    let tree = generator.generate(startRule);
+    let tree = generator.generate(grammar.rules[startRule], startRule);
     let output = tree.toString(options.separator);
 
     if (canCheckError) {
-      let error = getError(output);
+      let error = getError(output, tree.toASTString());
 
       if (error !== null) {
         while (true) {
@@ -227,7 +252,7 @@ function run(grammarFile, options) {
 
           tree.prune(t => {
             const output2 = t.toString(options.separator);
-            const error2 = getError(output2);
+            const error2 = getError(output2, t.toASTString());
             if (error2 !== null) {
               tree = t;
               output = output2;
